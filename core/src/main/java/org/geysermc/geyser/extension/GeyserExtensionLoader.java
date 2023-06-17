@@ -105,7 +105,7 @@ public class GeyserExtensionLoader extends ExtensionLoader {
         return EXTENSION_FILTERS;
     }
 
-    public Class<?> classByName(final String name) throws ClassNotFoundException{
+    public Class<?> classByName(final String name) throws ClassNotFoundException {
         Class<?> clazz = this.classes.get(name);
         if (clazz != null) {
             return clazz;

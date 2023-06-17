@@ -27,10 +27,22 @@ package org.geysermc.geyser.extension;
 
 import it.unimi.dsi.fastutil.objects.Object2ObjectMap;
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
+import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.ClassVisitor;
+import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.MethodVisitor;
+import org.objectweb.asm.Opcodes;
+import org.geysermc.geyser.GeyserImpl;
 import org.geysermc.geyser.api.extension.Extension;
 import org.geysermc.geyser.api.extension.ExtensionDescription;
 import org.geysermc.geyser.api.extension.exception.InvalidExtensionException;
+import org.objectweb.asm.Type;
+import org.objectweb.asm.commons.ClassRemapper;
+import org.objectweb.asm.commons.SimpleRemapper;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.net.MalformedURLException;
 import java.net.URL;
@@ -44,6 +56,9 @@ public class GeyserExtensionClassLoader extends URLClassLoader {
     public GeyserExtensionClassLoader(GeyserExtensionLoader loader, ClassLoader parent, Path path) throws MalformedURLException {
         super(new URL[] { path.toUri().toURL() }, parent);
         this.loader = loader;
+
+        super.addURL(getClass().getProtectionDomain().getCodeSource().getLocation());
+//        super.addURL(URI.create(getClass().getProtectionDomain().getCodeSource().getLocation().toString() + "!/" + ("org.geysermc.geyser.platform." + GeyserImpl.getInstance().getPlatformType().toString().toLowerCase() + ".shaded.").replace('.', '/')).toURL());
     }
 
     public Extension load(ExtensionDescription description) throws InvalidExtensionException {
@@ -77,14 +92,64 @@ public class GeyserExtensionClassLoader extends URLClassLoader {
 
     protected Class<?> findClass(String name, boolean checkGlobal) throws ClassNotFoundException {
         if (name.startsWith("org.geysermc.geyser.") || name.startsWith("net.minecraft.")) {
-            throw new ClassNotFoundException(name);
+//            throw new ClassNotFoundException(name);
         }
 
         Class<?> result = this.classes.get(name);
         if (result == null) {
-            result = super.findClass(name);
+            try {
+                result = super.findClass(name);
+            } catch (ClassNotFoundException ignored) {
+                System.out.println("");
+            }
+
             if (result == null && checkGlobal) {
                 result = this.loader.classByName(name);
+
+                if (result == null) {
+                    // Try get the class from the platform relocation
+                    try {
+                        String relocatedName = "org.geysermc.geyser.platform." + GeyserImpl.getInstance().getPlatformType().toString().toLowerCase() + ".shaded." + name;
+                        String relocatedNamePath = relocatedName.replace('.', '/');
+                        String namePath = name.replace('.', '/');
+                        GeyserImpl.getInstance().getLogger().debug("Trying to load " + name + " from platform relocation (" + relocatedName + ")");
+
+                        // Load the relocated class to check it exists
+//                        Class<?> clazz = Class.forName(relocatedName);
+
+                        // Create the new class
+//                        ClassWriter cw = new ClassWriter(0);
+//                        cw.visit(Opcodes.V16, Opcodes.ACC_PUBLIC | Opcodes.ACC_SUPER, namePath, null, relocatedNamePath, null);
+
+                        // Clone the constructors
+//                        for (Constructor<?> constructor : clazz.getConstructors()) {
+//                            String discriptor = Type.getConstructorDescriptor(constructor);
+//                            MethodVisitor mv = cw.visitMethod(constructor.getModifiers(), "<init>", discriptor, null, null);
+//                            mv.visitCode();
+//                            mv.visitVarInsn(Opcodes.ALOAD, 0);
+//                            mv.visitMethodInsn(Opcodes.INVOKESPECIAL, relocatedNamePath, "<init>", discriptor, false);
+//                            mv.visitInsn(Opcodes.RETURN);
+//                            mv.visitMaxs(1, 1 + constructor.getParameterCount());
+//                            mv.visitEnd();
+//                        }
+
+//                        cw.visitEnd();
+
+
+                        ClassReader reader = new ClassReader(GeyserExtensionClassLoader.class.getClassLoader().getResourceAsStream(relocatedNamePath + ".class"));
+                        ClassWriter writer = new ClassWriter(0);
+
+                        ClassVisitor visitor = new ClassRemapper(writer, new SimpleRemapper(relocatedNamePath, namePath));
+
+                        reader.accept(visitor, 0);
+
+                        byte[] bytes = writer.toByteArray();
+                        result = defineClass(name, bytes, 0, bytes.length);
+                    } catch (IOException e) {
+                        // We don't need to do anything here, we will just return null
+                        System.out.println("");
+                    }
+                }
             }
 
             if (result != null) {
@@ -94,5 +159,15 @@ public class GeyserExtensionClassLoader extends URLClassLoader {
             this.classes.put(name, result);
         }
         return result;
+    }
+
+    @Override
+    public Class<?> loadClass(String name) throws ClassNotFoundException {
+        return super.loadClass(name);
+    }
+
+    @Override
+    protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+        return super.loadClass(name, resolve);
     }
 }

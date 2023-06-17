@@ -60,6 +60,8 @@ dependencies {
     annotationProcessor(projects.ap)
 
     api(libs.events)
+
+    api(libs.bundles.asm)
 }
 
 configurations.api {
