@@ -1,0 +1,21 @@
+name: Pull Request - Spotless
+
+on:
+  pull_request_target:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Forbid access to secrets nor GH Token perms while checking the PR
+    permissions: {}
+    secrets: {}
+    steps:
+      - name: Setup Gradle
+        uses: GeyserMC/actions/setup-gradle-composite@master
+        with:
+          checkout_repository: ${{ github.event.pull_request.head.repo.full_name }}
+          checkout_ref: ${{ github.event.pull_request.head.sha }}
+          setup-java_java-version: 21
+          setup-gradle_cache-read-only: true
+      - name: Spotless Check
+        run: ./gradlew spotlessCheck
