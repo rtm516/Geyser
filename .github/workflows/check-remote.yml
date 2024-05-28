@@ -25,9 +25,7 @@ jobs:
           checkout_ref: ${{ inputs.ref }}
           setup-java_java-version: 21
           setup-gradle_cache-read-only: true
-
-      - name: Fetch origin master
-        run: git fetch origin master
+          checkout_fetch-depth: 0
 
       - name: Spotless Check
         run: ./gradlew spotlessCheck
