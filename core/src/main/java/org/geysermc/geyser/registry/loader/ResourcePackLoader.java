@@ -114,6 +114,15 @@ public class ResourcePackLoader implements RegistryLoader<Path, Map<UUID, Resour
             resourcePacks = new ArrayList<>();
         }
 
+        // Load unzipped resource packs
+        try (Stream<Path> stream = Files.list(directory)) {
+            resourcePacks.addAll(stream.filter(Files::isDirectory)
+                .filter(p -> p.resolve("manifest.json").toFile().exists())
+                .collect(Collectors.toCollection(ArrayList::new)));
+        } catch (Exception e) {
+            GeyserImpl.getInstance().getLogger().error("Could not list packs directory", e);
+        }
+
         // Add custom skull pack
         Path skullResourcePack = SkullResourcePackManager.createResourcePack();
         if (skullResourcePack != null) {
