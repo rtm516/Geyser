@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2022 GeyserMC. http://geysermc.org
+ * Copyright (c) 2019-2025 GeyserMC. http://geysermc.org
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -25,6 +25,7 @@
 
 package org.geysermc.geyser.registry;
 
+import io.sentry.Sentry;
 import org.cloudburstmc.protocol.bedrock.packet.ServerboundDiagnosticsPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.ClientboundDelimiterPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.ClientboundTabListPacket;
@@ -63,6 +64,8 @@ public class PacketTranslatorRegistry<T> extends AbstractMappedRegistry<Class<? 
             return false;
         }
 
+        Sentry.setUser(session.getSentryUser());
+
         PacketTranslator<P> translator = (PacketTranslator<P>) this.mappings.get(clazz);
         if (translator != null) {
             EventLoop eventLoop = session.getTickEventLoop();
@@ -94,7 +97,6 @@ public class PacketTranslatorRegistry<T> extends AbstractMappedRegistry<Class<? 
             GeyserImpl.getInstance().getLogger().debug("Caught ErosionCancellationException");
         } catch (Throwable ex) {
             GeyserImpl.getInstance().getLogger().error(GeyserLocale.getLocaleStringLog("geyser.network.translator.packet.failed", packet.getClass().getSimpleName()), ex);
-            ex.printStackTrace();
         }
     }
 

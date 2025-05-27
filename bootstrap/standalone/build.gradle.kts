@@ -16,6 +16,8 @@ dependencies {
     implementation(libs.bundles.jline)
 
     implementation(libs.bundles.log4j)
+
+    implementation(libs.sentry.log4j2)
 }
 
 application {

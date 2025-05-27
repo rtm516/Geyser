@@ -11,9 +11,11 @@
                 <OnStartupTriggeringPolicy/>
             </Policies>
         </RollingRandomAccessFile>
+        <Sentry name="Sentry" minimumBreadcrumbLevel="DEBUG" dsn="" />
     </Appenders>
     <Loggers>
         <Root level="INFO" >
+            <AppenderRef ref="Sentry"/>
             <AppenderRef ref="TerminalConsole"/>
             <AppenderRef ref="File"/>
             <filters>

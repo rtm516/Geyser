@@ -4,6 +4,7 @@ plugins {
     alias(libs.plugins.blossom)
     id("geyser.publish-conventions")
     id("io.freefair.lombok")
+    alias(libs.plugins.sentry.gradle)
 }
 
 dependencies {
@@ -157,4 +158,12 @@ tasks.register<DownloadFilesTask>("downloadBedrockData") {
     suffixedFiles = listOf("block_palette.nbt", "creative_items.json", "runtime_item_states.json")
 
     destinationDir = "$projectDir/src/main/resources/bedrock"
+}
+
+sentry {
+    includeSourceContext = System.getenv("SENTRY_AUTH_TOKEN") != null
+
+    org = "geysermc"
+    projectName = "geyser"
+    authToken = System.getenv("SENTRY_AUTH_TOKEN")
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2022 GeyserMC. http://geysermc.org
+ * Copyright (c) 2019-2025 GeyserMC. http://geysermc.org
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -50,6 +50,7 @@ import javax.crypto.SecretKey;
 import java.security.KeyPair;
 import java.security.PublicKey;
 import java.util.List;
+import java.util.Map;
 import java.util.function.BiConsumer;
 
 public class LoginEncryptionUtils {
@@ -78,6 +79,9 @@ public class LoginEncryptionUtils {
             session.setAuthData(new AuthData(extraData.displayName, extraData.identity, extraData.xuid));
             session.setCertChainData(certChainData);
 
+            session.getSentryUser().setUsername(extraData.displayName);
+            session.getSentryUser().setId(extraData.xuid);
+
             PublicKey identityPublicKey = result.identityClaims().parsedIdentityPublicKey();
 
             byte[] clientDataPayload = EncryptionUtils.verifyClientData(clientData, identityPublicKey);
@@ -89,6 +93,10 @@ public class LoginEncryptionUtils {
             BedrockClientData data = JSON_MAPPER.convertValue(clientDataJson, BedrockClientData.class);
             data.setOriginalString(clientData);
             session.setClientData(data);
+
+            session.getSentryUser().setData(Map.of(
+                "bedrock.version", data.getGameVersion()
+            ));
 
             try {
                 startEncryptionHandshake(session, identityPublicKey);
