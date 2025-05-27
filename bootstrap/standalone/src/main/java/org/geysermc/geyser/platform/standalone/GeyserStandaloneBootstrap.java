@@ -31,6 +31,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.introspect.AnnotatedField;
 import com.fasterxml.jackson.databind.introspect.BeanPropertyDefinition;
 import io.netty.util.ResourceLeakDetector;
+import io.sentry.Sentry;
+import io.sentry.protocol.App;
 import lombok.Getter;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
@@ -219,6 +221,11 @@ public class GeyserStandaloneBootstrap implements GeyserBootstrap {
 
         // Allow libraries like Protocol to have their debug information passthrough
         log4jLogger.get().setLevel(geyserConfig.isDebugMode() ? Level.DEBUG : Level.INFO);
+
+        App sentryApp = new App();
+        sentryApp.setAppVersion(GeyserImpl.VERSION);
+        sentryApp.setAppBuild(GeyserImpl.BUILD_NUMBER);
+        Sentry.getGlobalScope().getContexts().setApp(sentryApp);
 
         geyser = GeyserImpl.load(PlatformType.STANDALONE, this);
 
