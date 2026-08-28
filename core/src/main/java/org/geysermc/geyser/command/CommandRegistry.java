@@ -77,13 +77,13 @@ import org.incendo.cloud.suggestion.Suggestions;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiFunction;
 
 import static org.geysermc.geyser.command.GeyserCommand.DEFAULT_ROOT_COMMAND;
 
@@ -339,7 +339,11 @@ public class CommandRegistry implements EventRegistrar {
         return cloud.suggestionFactory().suggestImmediately(source, input);
     }
 
-    public void export(GeyserSession session, List<CommandData> bedrockCommands, Set<String> knownAliases) {
+    /**
+     * @param enumCanonicalizer keeps our enum names from clashing with the server's own
+     */
+    public void export(GeyserSession session, List<CommandData> bedrockCommands, Set<String> knownAliases,
+                       BiFunction<String, CommandEnumData, CommandEnumData> enumCanonicalizer) {
         cloud.commandTree().rootNodes().forEach(commandTree -> {
             var command = commandTree.command();
             // Command null happens if you register an extension command with custom Cloud parameters...
@@ -351,16 +355,28 @@ public class CommandRegistry implements EventRegistrar {
                     return;
                 }
 
-                LinkedHashMap<String, Set<CommandEnumConstraint>> values = new LinkedHashMap<>();
-                for (String s : rootComponent.aliases()) {
-                    values.put(s, EnumSet.of(CommandEnumConstraint.ALLOW_ALIASES));
+                CommandEnumData aliases = null;
+                if (rootComponent.aliases().size() > 1) {
+                    LinkedHashMap<String, Set<CommandEnumConstraint>> values = new LinkedHashMap<>();
+                    for (String s : rootComponent.aliases()) {
+                        // No constraints: the codec never serializes those of an alias enum
+                        values.put(s, Set.of());
+                    }
+                    aliases = new CommandEnumData(name + "Aliases", values, false);
                 }
-                CommandEnumData aliases = new CommandEnumData(name + "Aliases", values, false);
 
                 List<CommandOverloadData> data = new ArrayList<>();
                 for (var node : commandTree.children()) {
                     List<List<CommandParamData>> params = createParamData(session, node);
                     params.forEach(param -> data.add(new CommandOverloadData(false, param.toArray(CommandParamData[]::new))));
+                }
+
+                for (CommandOverloadData overload : data) {
+                    for (CommandParamData param : overload.getOverloads()) {
+                        if (param.getEnumData() != null) {
+                            param.setEnumData(enumCanonicalizer.apply(name, param.getEnumData()));
+                        }
+                    }
                 }
 
                 CommandData bedrockCommand = new CommandData(name, rootComponent.description().textDescription(),

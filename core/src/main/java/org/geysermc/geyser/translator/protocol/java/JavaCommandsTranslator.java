@@ -70,6 +70,8 @@ public class JavaCommandsTranslator extends PacketTranslator<ClientboundCommands
     private static final String[] ALL_EFFECT_IDENTIFIERS = EntityUtils.getAllEffectIdentifiers();
     private static final String[] ATTRIBUTES = AttributeType.Builtin.BUILTIN.values().stream().map(type -> type.getIdentifier().asString()).toList().toArray(new String[0]);
     private static final String[] ENUM_BOOLEAN = {"true", "false"};
+    /** How long the joined values of an enum may be before showing them inline stops being readable */
+    private static final int INLINE_ENUM_LENGTH = 32;
     private static final String[] VALID_COLORS;
     private static final String[] VALID_SCOREBOARD_SLOTS;
 
@@ -80,6 +82,7 @@ public class JavaCommandsTranslator extends PacketTranslator<ClientboundCommands
             if ("help".equals(o.name())) {
                 paramHash = 31 * paramHash + 1;
             }
+            paramHash = 31 * paramHash + o.aliasKey().hashCode();
             return 31 * paramHash + o.description().hashCode();
         }
 
@@ -87,12 +90,15 @@ public class JavaCommandsTranslator extends PacketTranslator<ClientboundCommands
         public boolean equals(BedrockCommandInfo a, BedrockCommandInfo b) {
             if (a == b) return true;
             if (a == null || b == null) return false;
-            if ("help".equals(a.name()) && !"help".equals(b.name())) {
+            if ("help".equals(a.name()) != "help".equals(b.name())) {
                 // Merging this causes Bedrock to fallback to its own help command
                 // Tested on Paper 1.20.4 with Essentials and Bedrock 1.21
                 // https://github.com/GeyserMC/Geyser/issues/2573
                 return false;
             }
+            // Only aliases of one command may merge. Without this, Spigot's description-less
+            // plugin commands all merge with each other on their shared <args: string> overload
+            if (!a.aliasKey().equals(b.aliasKey())) return false;
             if (!a.description().equals(b.description())) return false;
             if (a.paramData().length != b.paramData().length) return false;
             for (int i = 0; i < a.paramData().length; i++) {
@@ -136,8 +142,12 @@ public class JavaCommandsTranslator extends PacketTranslator<ClientboundCommands
         List<CommandData> commandData = new ArrayList<>();
         IntSet commandNodes = new IntOpenHashSet();
         Set<String> knownAliases = new HashSet<>();
+        // Root nodes that redirect elsewhere are alias registrations, not the command itself
+        Set<String> redirectingNames = new HashSet<>();
         Map<BedrockCommandInfo, Set<String>> commands = new Object2ObjectOpenCustomHashMap<>(PARAM_STRATEGY);
         Int2ObjectMap<List<CommandNode>> commandArgs = new Int2ObjectOpenHashMap<>();
+        // Shared by every command in this packet, so enum names can be kept unique across it
+        CommandBuilderContext context = new CommandBuilderContext(session);
 
         // Get the first node, it should be a root node
         CommandNode rootNode = nodes[packet.getFirstNodeIndex()];
@@ -159,13 +169,17 @@ public class JavaCommandsTranslator extends PacketTranslator<ClientboundCommands
             }
 
             // Get and parse all params
-            CommandOverloadData[] params = getParams(session, nodes[nodeIndex], nodes);
+            CommandOverloadData[] params = getParams(context, nodes[nodeIndex], nodes);
 
             // Insert the alias name into the command list
             String name = node.getName().toLowerCase(Locale.ROOT);
+            if (node.getRedirectIndex().isPresent()) {
+                redirectingNames.add(name);
+            }
             String description = registry.description(name, session.locale());
-            BedrockCommandInfo info = new BedrockCommandInfo(name, description, params);
-            commands.computeIfAbsent(info, $ -> new HashSet<>()).add(name);
+            BedrockCommandInfo info = new BedrockCommandInfo(name, description, aliasKey(node, nodes), params);
+            // Insertion-ordered so picking a display name below is deterministic
+            commands.computeIfAbsent(info, $ -> new LinkedHashSet<>()).add(name);
 
             // Add the command to the command lists
             knownCommands.add(name);
@@ -198,16 +212,28 @@ public class JavaCommandsTranslator extends PacketTranslator<ClientboundCommands
 
         // Loop through all the found commands
         for (Map.Entry<BedrockCommandInfo, Set<String>> entry : commands.entrySet()) {
-            String commandName = entry.getValue().iterator().next(); // We know this has a value
-
-            LinkedHashMap<String, Set<CommandEnumConstraint>> values = new LinkedHashMap<>();
-            // Is this right?
+            // Prefer the name the command was registered under over an alias, and "foo" over "minecraft:foo"
+            String commandName = null;
+            int bestScore = Integer.MAX_VALUE;
             for (String s : entry.getValue()) {
-                values.put(s, EnumSet.of(CommandEnumConstraint.ALLOW_ALIASES));
+                int score = (redirectingNames.contains(s) ? 4 : 0) + (s.indexOf(':') >= 0 ? 2 : 0);
+                if (score < bestScore) {
+                    bestScore = score;
+                    commandName = s;
+                }
             }
 
-            // Create a basic alias
-            CommandEnumData aliases = new CommandEnumData(commandName + "Aliases", values, false);
+            CommandEnumData aliases = null;
+            if (entry.getValue().size() > 1) {
+                LinkedHashMap<String, Set<CommandEnumConstraint>> values = new LinkedHashMap<>();
+                values.put(commandName, Set.of()); // Chosen name first, as Bedrock does
+                for (String s : entry.getValue()) {
+                    // No constraints: the codec never serializes those of an alias enum
+                    values.put(s, Set.of());
+                }
+
+                aliases = new CommandEnumData(commandName + "Aliases", values, false);
+            } // Bedrock leaves this unset for commands without aliases
 
             // Fetch command description
             String description = entry.getKey().description();
@@ -240,7 +266,7 @@ public class JavaCommandsTranslator extends PacketTranslator<ClientboundCommands
         }
 
         if (session.getGeyser().platformType() == PlatformType.STANDALONE) {
-            session.getGeyser().commandRegistry().export(session, commandData, knownAliases);
+            session.getGeyser().commandRegistry().export(session, commandData, knownAliases, context::canonicalize);
         }
 
         // Add our commands to the AvailableCommandsPacket for the bedrock client
@@ -254,14 +280,38 @@ public class JavaCommandsTranslator extends PacketTranslator<ClientboundCommands
     }
 
     /**
+     * The client renders an enum as {@code <name: enumName>} unless autocompletion is suppressed,
+     * in which case it lists the values as {@code <a|b|c>}. Only readable while the list is short.
+     */
+    private static boolean inlineValues(CommandEnumData enumData) {
+        int size = enumData.getValues().size();
+        // Bail on the count first: joining an item or block list builds a 30kb string for nothing
+        return size > 1 && size <= INLINE_ENUM_LENGTH && joinValues(enumData.getValues()).length() <= INLINE_ENUM_LENGTH;
+    }
+
+    private static String joinValues(Map<String, Set<CommandEnumConstraint>> values) {
+        return String.join("|", values.keySet());
+    }
+
+    /**
+     * @return the name aliases of this command share: the redirect target if there is one, without
+     *         any "plugin:" prefix. Spigot registers those prefixed forms as separate nodes.
+     */
+    private static String aliasKey(CommandNode node, CommandNode[] allNodes) {
+        CommandNode target = node.getRedirectIndex().isPresent() ? allNodes[node.getRedirectIndex().getAsInt()] : node;
+        String name = target.getName().toLowerCase(Locale.ROOT);
+        return name.substring(name.indexOf(':') + 1);
+    }
+
+    /**
      * Build the command parameter array for the given command
      *
-     * @param session the session
+     * @param context     the packet-wide command builder context
      * @param commandNode The command to build the parameters for
      * @param allNodes    Every command node
      * @return An array of parameter option arrays
      */
-    private static CommandOverloadData[] getParams(GeyserSession session, CommandNode commandNode, CommandNode[] allNodes) {
+    private static CommandOverloadData[] getParams(CommandBuilderContext context, CommandNode commandNode, CommandNode[] allNodes) {
         // Check if the command is an alias and redirect it
         if (commandNode.getRedirectIndex().isPresent()) {
             int redirectIndex = commandNode.getRedirectIndex().getAsInt();
@@ -272,9 +322,23 @@ public class JavaCommandsTranslator extends PacketTranslator<ClientboundCommands
         if (commandNode.getChildIndices().length >= 1) {
             // Create the root param node and build all the children
             ParamInfo rootParam = new ParamInfo(commandNode, null);
-            rootParam.buildChildren(new CommandBuilderContext(session), allNodes);
+            rootParam.buildChildren(context, allNodes);
 
             List<CommandOverloadData> treeData = rootParam.getTree();
+
+            // Name enums here, not in buildChildren: that discards the half-grown ones it makes
+            String commandName = aliasKey(commandNode, allNodes);
+            for (CommandOverloadData overload : treeData) {
+                for (CommandParamData param : overload.getOverloads()) {
+                    if (param.getEnumData() == null) {
+                        continue;
+                    }
+                    param.setEnumData(context.canonicalize(commandName, param.getEnumData()));
+                    if (inlineValues(param.getEnumData())) {
+                        param.getOptions().add(CommandParamOption.SUPPRESS_ENUM_AUTOCOMPLETION);
+                    }
+                }
+            }
 
             return treeData.toArray(new CommandOverloadData[0]);
         }
@@ -330,14 +394,13 @@ public class JavaCommandsTranslator extends PacketTranslator<ClientboundCommands
     }
 
     private CommandData createFakeHelpCommand() {
-        CommandEnumData aliases = new CommandEnumData("helpAliases", Map.of("help", EnumSet.of(CommandEnumConstraint.ALLOW_ALIASES)), false);
-        return new CommandData("help", "", Set.of(CommandData.Flag.NOT_CHEAT), CommandPermission.ANY, aliases, Collections.emptyList(), new CommandOverloadData[0]);
+        return new CommandData("help", "", Set.of(CommandData.Flag.NOT_CHEAT), CommandPermission.ANY, null, Collections.emptyList(), new CommandOverloadData[0]);
     }
 
     /**
      * Stores the command description and parameter data for best optimizing the Bedrock commands packet.
      */
-    private record BedrockCommandInfo(String name, String description, CommandOverloadData[] paramData) implements
+    private record BedrockCommandInfo(String name, String description, String aliasKey, CommandOverloadData[] paramData) implements
             org.geysermc.geyser.api.event.downstream.ServerDefineCommandsEvent.CommandInfo,
             ServerDefineCommandsEvent.CommandInfo
     {
@@ -356,8 +419,50 @@ public class JavaCommandsTranslator extends PacketTranslator<ClientboundCommands
         private String[] itemNames;
         private CommandEnumData teams;
 
+        // One enum name must not describe two value sets: https://github.com/GeyserMC/Geyser/issues/3411
+        private final Map<Map<String, Set<CommandEnumConstraint>>, CommandEnumData> enumsByValues = new HashMap<>();
+        private final Set<String> usedEnumNames = new HashSet<>();
+
         CommandBuilderContext(GeyserSession session) {
             this.session = session;
+        }
+
+        /**
+         * @return an enum with the given values, whose name no other enum in this packet uses.
+         *         Bedrock does the same, sharing one enum between every parameter with these values.
+         */
+        CommandEnumData canonicalize(String commandName, CommandEnumData enumData) {
+            if (enumData.isSoft()) {
+                return enumData; // Soft enums are sent in a separate list, and we name those ourselves
+            }
+
+            CommandEnumData existing = enumsByValues.get(enumData.getValues());
+            if (existing != null) {
+                return existing;
+            }
+
+            String name = uniqueName(commandName, enumData.getName());
+            CommandEnumData result = name.equals(enumData.getName())
+                    ? enumData : new CommandEnumData(name, enumData.getValues(), false);
+            enumsByValues.put(enumData.getValues(), result);
+            return result;
+        }
+
+        /**
+         * @return {@code name}, or - if another enum already took it - {@code command_name}, which
+         *         reads far better in the client's syntax hint than a bare counter would
+         */
+        private String uniqueName(String commandName, String name) {
+            if (usedEnumNames.add(name)) {
+                return name;
+            }
+
+            String qualified = commandName + "_" + name;
+            for (int i = 2; usedEnumNames.contains(qualified); i++) {
+                qualified = commandName + "_" + name + "_" + i;
+            }
+            usedEnumNames.add(qualified);
+            return qualified;
         }
 
         private Object getBiomes() {
