@@ -337,6 +337,10 @@ public class JavaCommandsTranslator extends PacketTranslator<ClientboundCommands
                     if (inlineValues(param.getEnumData())) {
                         param.getOptions().add(CommandParamOption.SUPPRESS_ENUM_AUTOCOMPLETION);
                     }
+                    // Vanilla sets this on every enum whose values carry a constraint, without exception
+                    if (param.getEnumData().getValues().values().stream().anyMatch(c -> !c.isEmpty())) {
+                        param.getOptions().add(CommandParamOption.HAS_SEMANTIC_CONSTRAINT);
+                    }
                 }
             }
 
@@ -603,10 +607,17 @@ public class JavaCommandsTranslator extends PacketTranslator<ClientboundCommands
                     } else if (mappedType instanceof String[]) {
                         LinkedHashMap<String, Set<CommandEnumConstraint>> map = new LinkedHashMap<>();
                         for (String s : (String[]) mappedType) {
-                            map.put(s, Set.of());
+                            int namespace = s.indexOf(':');
+                            if (namespace < 0) {
+                                map.put(s, Set.of());
+                                continue;
+                            }
+                            // Vanilla sends both forms, with the namespaced one marked as the alias
+                            map.put(s, EnumSet.of(CommandEnumConstraint.ALLOW_ALIASES));
+                            map.putIfAbsent(s.substring(namespace + 1), Set.of());
                         }
 
-                        enumData = new CommandEnumData(getEnumDataName(paramNode).toLowerCase(Locale.ROOT), map, false);
+                        enumData = new CommandEnumData(getEnumDataName(paramNode), map, false);
                     } else {
                         type = (CommandParam) mappedType;
                         // Bedrock throws a fit if an optional message comes after a string or target
@@ -640,9 +651,14 @@ public class JavaCommandsTranslator extends PacketTranslator<ClientboundCommands
         private static String getEnumDataName(CommandNode node) {
             if (node.getProperties() instanceof ResourceProperties properties) {
                 Key registryKey = properties.getRegistryKey();
-                return registryKey.value();
+                return registryKey.value().toLowerCase(Locale.ROOT);
             }
-            return node.getParser().name();
+            return switch (node.getParser()) {
+                // Vanilla's names for these two, which is what makes the client draw item icons
+                case ITEM_STACK -> "Item";
+                case BLOCK_STATE -> "Block";
+                default -> node.getParser().name().toLowerCase(Locale.ROOT);
+            };
         }
 
         /**
